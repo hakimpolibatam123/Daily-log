@@ -1,0 +1,33 @@
+name: Daily Activity Log
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 1 * * *"   # setiap hari 08:00 WIB
+
+permissions:
+  contents: write
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set git identity
+        run: |
+          git config user.name "Setya Pramudiya Hakim"
+          git config user.email "setyapramudiya18@gmail.com"
+
+      - name: Append activity log
+        run: |
+          echo "Update $(TZ=Asia/Jakarta date +'%Y-%m-%d %H:%M:%S') WIB" >> activity_log.txt
+
+      - name: Commit & Push
+        run: |
+          git add activity_log.txt
+          git commit -m "chore: daily activity log $(TZ=Asia/Jakarta date +'%Y-%m-%d')"
+          git pull --rebase
+          git push
