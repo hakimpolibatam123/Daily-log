@@ -1,26 +1,24 @@
 name: Daily Activity Log
 
 on:
-  # 1) Pemicu utama yang TEPAT WAKTU: dipanggil dari luar (cron-job.org) via GitHub API
+  # 1) Pemicu utama yang TEPAT WAKTU: dipanggil dari cron-job.org via GitHub API.
+  #    Boleh dipanggil beberapa kali sehari; dibatasi oleh MAX_PER_DAY.
   repository_dispatch:
     types: [daily-log]
 
-  # 2) Jadwal bawaan GitHub sebagai jaring pengaman (sering telat / kadang dilewati).
-  #    Disebar sepanjang hari; dedupe memastikan tetap hanya 1 commit per hari.
-  #    Semua slot < 17:00 UTC supaya masih di tanggal WIB yang sama.
+  # 2) Jadwal bawaan GitHub = jaring pengaman SAJA.
+  #    Hanya commit jika hari ini BELUM ada commit sama sekali (sering telat berjam-jam).
   schedule:
     - cron: "47 0 * * *"    # 07:47 WIB
     - cron: "23 2 * * *"    # 09:23 WIB
     - cron: "11 4 * * *"    # 11:11 WIB
     - cron: "37 6 * * *"    # 13:37 WIB
-    - cron: "13 9 * * *"    # 16:13 WIB
-    - cron: "29 12 * * *"   # 19:29 WIB
 
   # 3) Manual dari tab Actions
   workflow_dispatch:
     inputs:
       force:
-        description: "Tetap tulis log walau hari ini sudah ada"
+        description: "Abaikan batas harian"
         type: boolean
         default: false
 
@@ -30,6 +28,11 @@ permissions:
 concurrency:
   group: daily-log
   cancel-in-progress: false
+
+env:
+  # Batas commit per hari. Ubah di Settings > Secrets and variables > Actions > Variables
+  # (nama: MAX_PER_DAY). Jika variabel tidak dibuat, default = 6.
+  MAX_PER_DAY: ${{ vars.MAX_PER_DAY || '6' }}
 
 jobs:
   log:
@@ -43,18 +46,29 @@ jobs:
           git config user.name  "${{ vars.GIT_NAME  || 'Setya Pramudiya Hakim' }}"
           git config user.email "${{ vars.GIT_EMAIL || 'setyapramudiya18@gmail.com' }}"
 
-      - name: Append activity log (maks. 1x per hari)
+      - name: Append activity log (dibatasi per hari)
         id: log
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCE: ${{ inputs.force }}
         run: |
           git pull --rebase --quiet || true
           TODAY=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
+          COUNT=$(grep -c "^Update $TODAY " activity_log.txt 2>/dev/null || true)
+          COUNT=${COUNT:-0}
+
+          # Jadwal GitHub hanya mengisi kalau hari ini masih kosong
+          if [ "$EVENT" = "schedule" ]; then LIMIT=1; else LIMIT=$MAX_PER_DAY; fi
+
+          echo "Trigger: $EVENT | Tanggal WIB: $TODAY | Sudah: $COUNT | Batas: $LIMIT"
           echo "today=$TODAY" >> "$GITHUB_OUTPUT"
-          echo "Trigger: ${{ github.event_name }} | Tanggal WIB: $TODAY"
-          if [ "${{ inputs.force }}" != "true" ] && grep -q "^Update $TODAY " activity_log.txt 2>/dev/null; then
-            echo "Log hari ini sudah ada, skip."
+
+          if [ "$FORCE" != "true" ] && [ "$COUNT" -ge "$LIMIT" ]; then
+            echo "Batas harian tercapai, skip."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "Update $(TZ=Asia/Jakarta date +'%Y-%m-%d %H:%M:%S') WIB" >> activity_log.txt
+            echo "n=$((COUNT + 1))" >> "$GITHUB_OUTPUT"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -62,7 +76,7 @@ jobs:
         if: steps.log.outputs.skip == 'false'
         run: |
           git add activity_log.txt
-          git commit -m "chore: daily activity log ${{ steps.log.outputs.today }}"
+          git commit -m "chore: daily activity log ${{ steps.log.outputs.today }} (#${{ steps.log.outputs.n }})"
           for i in 1 2 3; do
             if git pull --rebase && git push; then exit 0; fi
             echo "Push gagal (percobaan $i), coba lagi..."
