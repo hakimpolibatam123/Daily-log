@@ -1,11 +1,28 @@
 name: Daily Activity Log
 
 on:
-  workflow_dispatch:
+  # 1) Pemicu utama yang TEPAT WAKTU: dipanggil dari luar (cron-job.org) via GitHub API
+  repository_dispatch:
+    types: [daily-log]
+
+  # 2) Jadwal bawaan GitHub sebagai jaring pengaman (sering telat / kadang dilewati).
+  #    Disebar sepanjang hari; dedupe memastikan tetap hanya 1 commit per hari.
+  #    Semua slot < 17:00 UTC supaya masih di tanggal WIB yang sama.
   schedule:
-    - cron: "47 0 * * *"   # 07:47 WIB - utama (biasanya jalan ~08:00 karena antrean)
-    - cron: "23 3 * * *"   # 10:23 WIB - cadangan 1
-    - cron: "11 7 * * *"   # 14:11 WIB - cadangan 2
+    - cron: "47 0 * * *"    # 07:47 WIB
+    - cron: "23 2 * * *"    # 09:23 WIB
+    - cron: "11 4 * * *"    # 11:11 WIB
+    - cron: "37 6 * * *"    # 13:37 WIB
+    - cron: "13 9 * * *"    # 16:13 WIB
+    - cron: "29 12 * * *"   # 19:29 WIB
+
+  # 3) Manual dari tab Actions
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Tetap tulis log walau hari ini sudah ada"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,22 +34,23 @@ concurrency:
 jobs:
   log:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Set git identity
         run: |
-          git config user.name "Setya Pramudiya Hakim"
-          git config user.email "setyapramudiya18@gmail.com"
+          git config user.name  "${{ vars.GIT_NAME  || 'Setya Pramudiya Hakim' }}"
+          git config user.email "${{ vars.GIT_EMAIL || 'setyapramudiya18@gmail.com' }}"
 
-      - name: Append activity log (maks. 1x per hari untuk jadwal)
+      - name: Append activity log (maks. 1x per hari)
         id: log
         run: |
+          git pull --rebase --quiet || true
           TODAY=$(TZ=Asia/Jakarta date +'%Y-%m-%d')
           echo "today=$TODAY" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "schedule" ] && grep -q "^Update $TODAY " activity_log.txt 2>/dev/null; then
+          echo "Trigger: ${{ github.event_name }} | Tanggal WIB: $TODAY"
+          if [ "${{ inputs.force }}" != "true" ] && grep -q "^Update $TODAY " activity_log.txt 2>/dev/null; then
             echo "Log hari ini sudah ada, skip."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -40,10 +58,14 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit & Push
+      - name: Commit & Push (retry 3x)
         if: steps.log.outputs.skip == 'false'
         run: |
           git add activity_log.txt
           git commit -m "chore: daily activity log ${{ steps.log.outputs.today }}"
-          git pull --rebase
-          git push
+          for i in 1 2 3; do
+            if git pull --rebase && git push; then exit 0; fi
+            echo "Push gagal (percobaan $i), coba lagi..."
+            sleep $((i * 10))
+          done
+          exit 1
